@@ -2,11 +2,11 @@
 Scripts for running measurement-based quantum computing experiments on IBM hardware.
 
 ## Requirements
-- Python 3 with the following libraries:
-  - qiskit
-  - numpy
-  - random
-  - matplotlib (optional)
+Python 3 with the following libraries:
+ - qiskit
+ - numpy
+ - random
+ - matplotlib (optional)
   
 ## How-to-use
 Download the entire repository. The scripts can all be run from the exec.ipynb Jupyter notebook.
