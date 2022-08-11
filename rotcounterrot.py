@@ -128,13 +128,13 @@ def generate_circuit_list(beta, a, b):
 def run_circuit(qc_list, backend, best_qubits, shots_num, job_manager, meas_filter = 0):
     """
     Runs quantum circuit(s)
-    Input: qc_list - List of QuantumCircuit Objects
+    Inputs: qc_list - List of QuantumCircuit Objects
            backend - Which backend (simulator or device) to use
            best_qubits - which qubits to use on the backend
            shots_num - how many shots per experiment'
            job_manager - IBMQ job manager
            meas_filter - Measurement error mitigation filter; by default is not applied.
-    Output: List containing 4 dictionaries corresponding to counts/experimental results from supplied experiments.
+    Outputs: List containing 4 dictionaries corresponding to counts/experimental results from supplied experiments.
     """
     qc_trans = transpile(qc_list, backend=backend, initial_layout=best_qubits)
     job_exp = job_manager.run(qc_trans, backend=backend, shots=shots_num, name='SPTexp_rotcounterrot')
@@ -158,6 +158,25 @@ def run_circuit(qc_list, backend, best_qubits, shots_num, job_manager, meas_filt
 
 
 # Functions for post-processing data
+def get_norms(beta, a, b):
+    """
+    Calculate (squared) norms of all four |phi_outcome> =  T^dagger |psi(+/- beta)_outcome> states
+    Inputs: beta - Rotation angle
+            a, b - Coefficients for the T tensor, which is a product of aI + bX.
+    Outputs: List containing four squared norms (0/1 outcome norms for first qubit (with +beta), then 0/1 outcome norms for third qubit (-beta))
+    """
+    phi_qubit0_plus = get_modified_state(beta, 0, a, b)
+    norm_0_plus = phi_qubit0_plus.conj() @ phi_qubit0_plus
+    phi_qubit0_minus = get_modified_state(beta, 1, a, b)
+    norm_0_minus = phi_qubit0_minus.conj() @ phi_qubit0_minus
+    phi_qubit2_plus = get_modified_state(-beta, 0, a, b)
+    norm_2_plus = phi_qubit2_plus.conj() @ phi_qubit2_plus
+    phi_qubit2_minus = get_modified_state(-beta, 1, a, b)
+    norm_2_minus = phi_qubit2_minus.conj() @ phi_qubit2_minus
+    
+    norms = [norm_0_plus, norm_0_minus, norm_2_plus, norm_2_minus]
+    return norms
+
 def get_probability(counts):
     """
     Returns list of raw experimental probability for outcome with 0 on 0-qubit and 2-qubit.
@@ -166,7 +185,7 @@ def get_probability(counts):
     Note that qiskit reads from right to left; i.e. the rightmost is the 0 qubit, the leftmost is 3.
     
     Inputs: counts - Dictionary containing measurement statistics
-    Output: Probability for the 0-qubit = 0 and 2-qubit = 0 (+) outcome.
+    Outputs: Probability for the 0-qubit = 0 and 2-qubit = 0 (+) outcome.
     """
     states = counts.keys()
     total_counts = 0
@@ -206,7 +225,7 @@ def post_process_results(counts_list, beta, a, b):
     """
     Post-process results from 4 experiments.
     First, we calculate the probability of measuring the 0 (+) outcome on the first and third qubits for each experiment.
-    We then normalize by (dividing?/multiplying?) by the norms of the T-modified states.
+    We then normalize by dividing by the (squared) norms of the T-modified states.
     We then normalize one last time across the 4 probability values.
     Finally, we compute <X> as p0actual + p3actual - p1actual - p2actual
     p0actual - first experiment - probability of measuring s1 = 0 s3 = 0 in simulated experiment
@@ -216,24 +235,37 @@ def post_process_results(counts_list, beta, a, b):
     a, b - Coefficients for T tensor of aI + bX
     
     Inputs: counts_list - List of dictionaries containing measurement statistics
-    Outputs: <X>
+            beta - Rotation angle
+            a, b - Coefficients for the T tensor, which is a product of aI + bX.
+    Outputs: Xavg - <X> of the logical qubit
+             Xerr - Uncertainty in <X> of the logical qubit.
     """
     raw_probs, raw_uncertainties = get_probabilities(counts_list)
-    actual_probs = raw_probs/np.sum(raw_probs)
-    actual_uncertainties = raw_uncertainties/np.sum(raw_probs)
+    norms = get_norms(beta, a, b)
+    normed_probs = []
+    normed_uncertainties = []
+    for i in range(4):
+        qubit_0_index = (i // 2) % 2
+        qubit_2_index = i % 2 + 2
+        normed_probs.append(raw_probs[i] / norms[qubit_0_index] / norms[qubit_2_index])
+        normed_uncertainties.append(raw_uncertainties[i] / norms[qubit_0_index] / norms[qubit_2_index])
+    normed_probs = np.array(normed_probs)
+    normed_uncertainties = np.array(normed_uncertainties)
+    actual_probs = normed_probs/np.sum(normed_probs)
+    actual_uncertainties = normed_uncertainties/np.sum(normed_probs)
     Xavg = actual_probs[0] + actual_probs[3] - actual_probs[1] - actual_probs[2]
-    Xuncertainty = np.sqrt(np.sum(np.square(actual_uncertainties)))
-    return np.real(Xavg), np.real(Xuncertainty)
+    Xerr = np.sqrt(np.sum(np.square(actual_uncertainties)))
+    return np.real(Xavg), np.real(Xerr)
 
 
 # Measurement error calibrations
 def run_meas_error_calibs(backend, best_qubits, shots_num):
     """
     Runs measurement error calibration circuits and returns a measurement error mitigation filter
-    Input: backend - Which backend (simulator or device) to use
+    Inputs: backend - Which backend (simulator or device) to use
            best_qubits - which qubits to use on the backend
            shots_num - how many shots per experiment
-    Output: meas_filter - Measurement error mitigation filter based on calibrations
+    Outputs: meas_filter - Measurement error mitigation filter based on calibrations
     """
     qc_err = qiskit.QuantumRegister(len(best_qubits))
     meas_calibs, state_labels = complete_meas_cal(qr=qc_err, circlabel='mcal')
@@ -250,7 +282,7 @@ def run_meas_error_calibs(backend, best_qubits, shots_num):
 def one_exp_point(backend, best_qubits, shots_num, job_manager, beta, a, b, meas_filter = 0):
     """
     Generates a single datapoint of the rotation-counter rotation experiment
-    Input: backend - Which backend (simulator or device) to use
+    Inputs: backend - Which backend (simulator or device) to use
            best_qubits - which (4) qubits to use on the backend
            shots_num - how many shots per experiment
            job_manager - IBMQ jobmanager
@@ -258,8 +290,8 @@ def one_exp_point(backend, best_qubits, shots_num, job_manager, beta, a, b, meas
            a - T-operator coefficient for I
            b - T-operator coefficient for X
            meas_filter - Measurement error mitigation filter; by default is not applied.
-    Output: logicXavg - <X> of the logical qubit
-            logicXerr - Uncertainty in <X> of the logical qubit.
+    Outputs: logicXavg - <X> of the logical qubit
+             logicXerr - Uncertainty in <X> of the logical qubit.
     """
     qc_list = generate_circuit_list(beta, a, b)
     counts_list = run_circuit(qc_list, backend, best_qubits, shots_num, job_manager, meas_filter)
@@ -269,16 +301,16 @@ def one_exp_point(backend, best_qubits, shots_num, job_manager, beta, a, b, meas
 def many_exp_point(backend, best_qubits, shots_num, job_manager, beta, acoeff_ar, bcoeff_ar, meas_filter = 0):
     """
     Generates multiple datapoints of the rotation-counter rotation experiment
-    Input: backend - Which backend (simulator or device) to use
+    Inputs: backend - Which backend (simulator or device) to use
            best_qubits - which (4) qubits to use on the backend
            shots_num - how many shots per experiment
            job_manager - IBMQ jobmanager
            beta - rotation angle
            a_ar - A list of the T-operator coefficients for I
            b_ar - A list of the T-operator coefficient for X
-           meas_filter - Measurement error mitigation filter; by default is not applied.
-    Output: logicXavg_ar - <X> of the logical qubit (one for each pair of coefficients)
-            logicXuncertainty_ar - Uncertainty in <X> of the logical qubit (one for each pair of coefficients.
+           meas_filter - Measurement error mitigation filter; by default is not applied
+    Outputs: logicXavg_ar - <X> of the logical qubit (one for each pair of coefficients)
+            logicXuncertainty_ar - Uncertainty in <X> of the logical qubit (one for each pair of coefficients)
     """
     logicXavg_ar = []
     logicXerr_ar = []
